@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { supabase } from "@/lib/supabase";
 
 type TipoMovimento = "entrata" | "uscita";
 type Sezione = "recap" | "movimenti" | "categorie" | "piani";
@@ -153,27 +154,50 @@ function formatEuro(valore: number) {
 function formatNumero(valore: number) {
   return new Intl.NumberFormat("it-IT", {
     minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
+    maximumFractionDigits: 2,
     useGrouping: true,
   }).format(numeroSicuro(valore));
 }
 
+function formatPercentuale(valore: number) {
+  return new Intl.NumberFormat("it-IT", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  }).format(numeroSicuro(valore));
+}
+
 function normalizzaImporto(importo: string) {
-  const pulito = importo
+  const valore = String(importo || "")
     .replaceAll("€", "")
     .replaceAll(" ", "")
     .replaceAll(String.fromCharCode(160), "")
-    .replaceAll(".", "")
-    .replace(",", ".")
     .trim();
 
-  return Number(pulito);
+  if (!valore) return NaN;
+
+  const ultimaVirgola = valore.lastIndexOf(",");
+  const ultimoPunto = valore.lastIndexOf(".");
+
+  if (ultimaVirgola > ultimoPunto) {
+    return Number(valore.replaceAll(".", "").replace(",", "."));
+  }
+
+  if (ultimoPunto > ultimaVirgola) {
+    return Number(valore.replaceAll(",", ""));
+  }
+
+  return Number(valore);
 }
 
 function formatInputImporto(valore: string) {
   const numero = normalizzaImporto(valore);
   if (Number.isNaN(numero) || numero <= 0) return "";
-  return formatNumero(numero);
+
+  return new Intl.NumberFormat("it-IT", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+    useGrouping: true,
+  }).format(numero);
 }
 
 function meseCorrente() {
@@ -207,7 +231,7 @@ function movimentoToForm(movimento: Movimento): NuovoMovimento {
     pagante: movimento.pagante,
     data: movimento.data,
     versoChi: movimento.versoChi,
-    importo: formatNumero(movimento.importo),
+    importo: formatInputImporto(String(movimento.importo).replace(".", ",")),
     categoria: movimento.categoria,
     nota: movimento.nota,
   };
@@ -225,7 +249,6 @@ function normalizzaTipo(tipo: string): TipoMovimento {
 
 function normalizzaData(data: string) {
   const pulita = data.trim();
-
   if (pulita.includes("-")) return pulita;
 
   const parti = pulita.split("/");
@@ -283,23 +306,52 @@ export default function Home() {
   const [recapAnnualeAperto, setRecapAnnualeAperto] = useState(true);
   const [mesiRecapAperti, setMesiRecapAperti] = useState<Record<string, boolean>>({});
   const [touchStart, setTouchStart] = useState<number | null>(null);
-  const [nuovoMovimento, setNuovoMovimento] = useState<NuovoMovimento>(
-    nuovoMovimentoVuoto()
-  );
+  const [caricamento, setCaricamento] = useState(true);
+  const [salvataggio, setSalvataggio] = useState(false);
+  const [nuovoMovimento, setNuovoMovimento] = useState<NuovoMovimento>(nuovoMovimentoVuoto());
 
   useEffect(() => {
-    const movimentiSalvati = localStorage.getItem("movimenti");
-    const pianoAnnualeSalvato = localStorage.getItem("pianoAnnuale");
-    const pianiMensiliSalvati = localStorage.getItem("pianiMensili");
+    async function caricaMovimenti() {
+      setCaricamento(true);
 
-    if (movimentiSalvati) setMovimenti(JSON.parse(movimentiSalvati));
-    if (pianoAnnualeSalvato) setPianoAnnuale(JSON.parse(pianoAnnualeSalvato));
-    if (pianiMensiliSalvati) setPianiMensili(JSON.parse(pianiMensiliSalvati));
+      const { data, error } = await supabase
+        .from("movimenti")
+        .select("*")
+        .order("data", { ascending: false })
+        .order("id", { ascending: false });
+
+      if (error) {
+        console.error("Errore caricamento movimenti:", error);
+        alert("Errore durante il caricamento dei movimenti da Supabase");
+        setCaricamento(false);
+        return;
+      }
+
+      const movimentiConvertiti: Movimento[] = (data || []).map((item) => ({
+        id: Number(item.id),
+        tipo: item.tipo as TipoMovimento,
+        pagante: item.pagante || "",
+        data: item.data,
+        versoChi: item.verso_chi || "",
+        importo: Number(item.importo),
+        categoria: item.categoria || "ALTRO",
+        nota: item.nota || "",
+      }));
+
+      setMovimenti(movimentiConvertiti);
+      setCaricamento(false);
+    }
+
+    caricaMovimenti();
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("movimenti", JSON.stringify(movimenti));
-  }, [movimenti]);
+    const pianoAnnualeSalvato = localStorage.getItem("pianoAnnuale");
+    const pianiMensiliSalvati = localStorage.getItem("pianiMensili");
+
+    if (pianoAnnualeSalvato) setPianoAnnuale(JSON.parse(pianoAnnualeSalvato));
+    if (pianiMensiliSalvati) setPianiMensili(JSON.parse(pianiMensiliSalvati));
+  }, []);
 
   useEffect(() => {
     localStorage.setItem("pianoAnnuale", JSON.stringify(pianoAnnuale));
@@ -339,7 +391,7 @@ export default function Home() {
     if (!movimento.data) return false;
 
     const oggi = new Date();
-    const dataMovimento = new Date(movimento.data);
+    const dataMovimento = new Date(`${movimento.data}T00:00:00`);
 
     if (filtroPeriodo === "tutto") return true;
 
@@ -356,7 +408,10 @@ export default function Home() {
 
     if (filtroPeriodo === "personalizzato") {
       if (!dataInizio || !dataFine) return true;
-      return dataMovimento >= new Date(dataInizio) && dataMovimento <= new Date(dataFine);
+      return (
+        dataMovimento >= new Date(`${dataInizio}T00:00:00`) &&
+        dataMovimento <= new Date(`${dataFine}T23:59:59`)
+      );
     }
 
     return true;
@@ -395,15 +450,8 @@ export default function Home() {
   }, [movimentiFiltrati]);
 
   const listaCategorie = useMemo(
-    () =>
-      Object.values(categorie).sort(
-        (a, b) => Math.abs(b.saldo) - Math.abs(a.saldo)
-      ),
+    () => Object.values(categorie).sort((a, b) => Math.abs(b.saldo) - Math.abs(a.saldo)),
     [categorie]
-  );
-
-  const categorieConUscite = listaCategorie.filter(
-    (categoria) => categoria.uscite > 0
   );
 
   const movimentiDaMostrare = useMemo(() => {
@@ -414,21 +462,13 @@ export default function Home() {
     );
   }, [movimenti, categorieFiltroMovimenti]);
 
-  const uscitaMassima =
-    categorieConUscite.length > 0
-      ? Math.max(...categorieConUscite.map((categoria) => categoria.uscite))
-      : 0;
-
-  const budgetAnnualeTotale = pianoAnnuale.reduce(
-    (somma, voce) => somma + voce.budget,
-    0
-  );
+  const budgetAnnualeTotale = pianoAnnuale.reduce((somma, voce) => somma + voce.budget, 0);
 
   const spesaAnnualeTotale = movimenti
     .filter(
       (movimento) =>
         movimento.tipo === "uscita" &&
-        new Date(movimento.data).getFullYear() === new Date().getFullYear()
+        new Date(`${movimento.data}T00:00:00`).getFullYear() === new Date().getFullYear()
     )
     .reduce((somma, movimento) => somma + movimento.importo, 0);
 
@@ -439,12 +479,10 @@ export default function Home() {
       budget: {},
     };
 
-  const budgetMensileTotale = pianoMensileAttivo
-    ? Object.values(pianoMensileAttivo.budget).reduce(
-        (somma, valore) => somma + valore,
-        0
-      )
-    : 0;
+  const budgetMensileTotale = Object.values(pianoMensileAttivo.budget).reduce(
+    (somma, valore) => somma + valore,
+    0
+  );
 
   const spesaMensileTotale = movimenti
     .filter(
@@ -463,10 +501,10 @@ export default function Home() {
     });
   }
 
-  function importaCSV(file: File) {
+  async function importaCSV(file: File) {
     const reader = new FileReader();
 
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const testo = String(reader.result || "")
           .split(String.fromCharCode(13))
@@ -532,19 +570,19 @@ export default function Home() {
               return null;
             }
 
+            const categoria =
+              indice.categoria >= 0
+                ? normalizzaCategoria(colonne[indice.categoria] || "ALTRO")
+                : "ALTRO";
+
             return {
               id: Date.now() + index,
               data,
-              tipo: normalizzaTipo(colonne[indice.tipo] || "uscita"),
-              pagante:
-                indice.pagante >= 0 ? colonne[indice.pagante]?.trim() || "" : "",
-              versoChi:
-                indice.versoChi >= 0 ? colonne[indice.versoChi]?.trim() || "" : "",
+              tipo: categoria === "ENTRATA" ? "entrata" : normalizzaTipo(colonne[indice.tipo] || "uscita"),
+              pagante: indice.pagante >= 0 ? colonne[indice.pagante]?.trim() || "" : "",
+              versoChi: indice.versoChi >= 0 ? colonne[indice.versoChi]?.trim() || "" : "",
               importo,
-              categoria:
-                indice.categoria >= 0
-                  ? normalizzaCategoria(colonne[indice.categoria] || "ALTRO")
-                  : "ALTRO",
+              categoria,
               nota: indice.nota >= 0 ? colonne[indice.nota]?.trim() || "" : "",
             };
           })
@@ -555,9 +593,29 @@ export default function Home() {
           return;
         }
 
+        const righeSupabase = importati.map((movimento) => ({
+          id: movimento.id,
+          tipo: movimento.tipo,
+          pagante: movimento.pagante,
+          data: movimento.data,
+          verso_chi: movimento.versoChi,
+          importo: movimento.importo,
+          categoria: movimento.categoria,
+          nota: movimento.nota,
+        }));
+
+        const { error } = await supabase.from("movimenti").upsert(righeSupabase);
+
+        if (error) {
+          console.error("Errore import CSV:", error);
+          alert("Errore durante il salvataggio del CSV online");
+          return;
+        }
+
         setMovimenti((correnti) => [...importati, ...correnti]);
         alert(`Importati ${formatNumero(importati.length)} movimenti dal CSV`);
-      } catch {
+      } catch (errore) {
+        console.error(errore);
         alert("Errore durante l'importazione del CSV");
       }
     };
@@ -577,7 +635,7 @@ export default function Home() {
     setMostraForm(true);
   }
 
-  function salvaMovimento() {
+  async function salvaMovimento() {
     if (!nuovoMovimento.data || !nuovoMovimento.importo) {
       alert("Inserisci almeno data e importo");
       return;
@@ -609,6 +667,27 @@ export default function Home() {
       nota: nuovoMovimento.nota.trim(),
     };
 
+    setSalvataggio(true);
+
+    const { error } = await supabase.from("movimenti").upsert({
+      id: movimentoSalvato.id,
+      tipo: movimentoSalvato.tipo,
+      pagante: movimentoSalvato.pagante,
+      data: movimentoSalvato.data,
+      verso_chi: movimentoSalvato.versoChi,
+      importo: movimentoSalvato.importo,
+      categoria: movimentoSalvato.categoria,
+      nota: movimentoSalvato.nota,
+    });
+
+    setSalvataggio(false);
+
+    if (error) {
+      console.error("Errore salvataggio movimento:", error);
+      alert("Errore durante il salvataggio online");
+      return;
+    }
+
     if (movimentoInModifica) {
       setMovimenti((correnti) =>
         correnti.map((movimento) =>
@@ -622,10 +701,19 @@ export default function Home() {
     annullaInserimento();
   }
 
-  function cancellaMovimento(id: number) {
+  async function cancellaMovimento(id: number) {
     const conferma = confirm("Cancellare questo movimento?");
     if (!conferma) return;
-    setMovimenti(movimenti.filter((movimento) => movimento.id !== id));
+
+    const { error } = await supabase.from("movimenti").delete().eq("id", id);
+
+    if (error) {
+      console.error("Errore cancellazione movimento:", error);
+      alert("Errore durante la cancellazione online");
+      return;
+    }
+
+    setMovimenti((correnti) => correnti.filter((movimento) => movimento.id !== id));
   }
 
   function annullaInserimento() {
@@ -658,9 +746,7 @@ export default function Home() {
     const budget = normalizzaImporto(valore) || 0;
 
     setPianiMensili((pianiCorrenti) => {
-      const pianoEsistente = pianiCorrenti.find(
-        (piano) => piano.mese === mesePianoAttivo
-      );
+      const pianoEsistente = pianiCorrenti.find((piano) => piano.mese === mesePianoAttivo);
 
       if (!pianoEsistente) {
         return [
@@ -701,7 +787,7 @@ export default function Home() {
         (movimento) =>
           movimento.tipo === "uscita" &&
           movimento.categoria === categoria &&
-          new Date(movimento.data).getFullYear() === new Date().getFullYear()
+          new Date(`${movimento.data}T00:00:00`).getFullYear() === new Date().getFullYear()
       )
       .reduce((somma, movimento) => somma + movimento.importo, 0);
   }
@@ -720,20 +806,20 @@ export default function Home() {
   function valoreDraftAnnuale(categoria: string) {
     if (budgetAnnualeDraft[categoria] !== undefined) return budgetAnnualeDraft[categoria];
     const budget = budgetAnnualeCategoria(categoria);
-    return budget ? formatNumero(budget) : "";
+    return budget ? formatInputImporto(String(budget).replace(".", ",")) : "";
   }
 
   function valoreDraftMensile(categoria: string) {
     if (budgetMensileDraft[categoria] !== undefined) return budgetMensileDraft[categoria];
     const budget = budgetMensileCategoria(categoria);
-    return budget ? formatNumero(budget) : "";
+    return budget ? formatInputImporto(String(budget).replace(".", ",")) : "";
   }
 
   function modificaBudgetAnnuale(categoria: string) {
     setBudgetAnnualeDraft((correnti) => ({
       ...correnti,
       [categoria]: budgetAnnualeCategoria(categoria)
-        ? formatNumero(budgetAnnualeCategoria(categoria))
+        ? formatInputImporto(String(budgetAnnualeCategoria(categoria)).replace(".", ","))
         : "",
     }));
   }
@@ -742,7 +828,7 @@ export default function Home() {
     setBudgetMensileDraft((correnti) => ({
       ...correnti,
       [categoria]: budgetMensileCategoria(categoria)
-        ? formatNumero(budgetMensileCategoria(categoria))
+        ? formatInputImporto(String(budgetMensileCategoria(categoria)).replace(".", ","))
         : "",
     }));
   }
@@ -807,13 +893,13 @@ export default function Home() {
 
   function movimentiAnnoCorrente() {
     return movimenti.filter(
-      (movimento) => new Date(movimento.data).getFullYear() === annoCorrente
+      (movimento) => new Date(`${movimento.data}T00:00:00`).getFullYear() === annoCorrente
     );
   }
 
   function movimentiDelMese(indiceMese: number) {
     return movimentiAnnoCorrente().filter(
-      (movimento) => new Date(movimento.data).getMonth() === indiceMese
+      (movimento) => new Date(`${movimento.data}T00:00:00`).getMonth() === indiceMese
     );
   }
 
@@ -865,12 +951,6 @@ export default function Home() {
     const mese = meseCompleto(indiceMese);
     const piano = pianiMensili.find((item) => item.mese === mese);
     return piano?.budget[categoria] || 0;
-  }
-
-  function budgetOPAnnoCategoria(categoria: string) {
-    return pianiMensili
-      .filter((piano) => piano.mese.startsWith(String(annoCorrente)))
-      .reduce((somma, piano) => somma + (piano.budget[categoria] || 0), 0);
   }
 
   function CardPerformanceAnnuale() {
@@ -930,23 +1010,15 @@ export default function Home() {
         <div className="grid grid-cols-2 gap-3 mt-5">
           <div className="rounded-2xl bg-white border border-zinc-200 p-4">
             <p className="text-xs text-zinc-500">Saldo anno</p>
-            <p
-              className={`font-black text-lg mt-1 ${
-                saldoAnno >= 0 ? "text-emerald-600" : "text-red-600"
-              }`}
-            >
+            <p className={`font-black text-lg mt-1 ${saldoAnno >= 0 ? "text-emerald-600" : "text-red-600"}`}>
               {formatEuro(saldoAnno)}
             </p>
           </div>
 
           <div className="rounded-2xl bg-white border border-zinc-200 p-4">
             <p className="text-xs text-zinc-500">Risparmio</p>
-            <p
-              className={`font-black text-lg mt-1 ${
-                capacitaRisparmio >= 0 ? "text-emerald-600" : "text-red-600"
-              }`}
-            >
-              {formatNumero(capacitaRisparmio)}%
+            <p className={`font-black text-lg mt-1 ${capacitaRisparmio >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+              {formatPercentuale(capacitaRisparmio)}%
             </p>
           </div>
         </div>
@@ -990,9 +1062,7 @@ export default function Home() {
       return (
         <span
           className={`inline-flex justify-end rounded-full px-2.5 py-1 text-[10px] font-black ${
-            positivo
-              ? "bg-emerald-50 text-emerald-700"
-              : "bg-red-50 text-red-700"
+            positivo ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
           }`}
         >
           {label} {positivo ? "+" : "-"}
@@ -1035,22 +1105,18 @@ export default function Home() {
                   className="grid grid-cols-[1.4fr_0.45fr_0.7fr_0.7fr] gap-2 items-center rounded-2xl bg-white border border-zinc-200 p-2.5"
                 >
                   <div className="min-w-0">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div
-                          className={`w-8 h-8 rounded-xl flex items-center justify-center border shrink-0 ${stile.bg} ${stile.bordo}`}
-                        >
-                          {stile.icona}
-                        </div>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div
+                        className={`w-8 h-8 rounded-xl flex items-center justify-center border shrink-0 ${stile.bg} ${stile.bordo}`}
+                      >
+                        {stile.icona}
+                      </div>
 
-                        <div className="min-w-0">
-                          <p className="font-black text-sm truncate">
-                            {voce.categoria}
-                          </p>
-                          <p className="text-xs text-zinc-500">
-                            {formatNumero(percentuale)}% · {formatEuro(voce.valore)}
-                          </p>
-                        </div>
+                      <div className="min-w-0">
+                        <p className="font-black text-sm truncate">{voce.categoria}</p>
+                        <p className="text-xs text-zinc-500">
+                          {formatPercentuale(percentuale)}% · {formatEuro(voce.valore)}
+                        </p>
                       </div>
                     </div>
 
@@ -1065,21 +1131,15 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="text-right">
-                    <p className="font-black text-sm text-red-600">
-                      {formatEuro(voce.valore)}
-                    </p>
-                  </div>
+                  <p className="text-right font-black text-sm text-red-600">
+                    {formatEuro(voce.valore)}
+                  </p>
 
-                  <div className="text-right">
-                    {badgeDelta(deltaMP, "MP")}
-                  </div>
+                  <div className="text-right">{badgeDelta(deltaMP, "MP")}</div>
 
                   <div className="text-right">
                     {deltaOP === null ? (
-                      <span className="text-[10px] font-black text-zinc-400">
-                        Da Mag
-                      </span>
+                      <span className="text-[10px] font-black text-zinc-400">Da Mag</span>
                     ) : (
                       badgeDelta(deltaOP, "OP")
                     )}
@@ -1102,9 +1162,7 @@ export default function Home() {
             </p>
           </div>
 
-          <p className="text-xs text-zinc-500 text-right">
-            Distribuzione per categoria
-          </p>
+          <p className="text-xs text-zinc-500 text-right">Distribuzione per categoria</p>
         </div>
 
         {dati.map((voce, index) => {
@@ -1112,10 +1170,7 @@ export default function Home() {
           const stile = categoriaStile(voce.categoria);
 
           return (
-            <div
-              key={voce.categoria}
-              className="bg-white border border-zinc-200 rounded-lg p-2"
-            >
+            <div key={voce.categoria} className="bg-white border border-zinc-200 rounded-lg p-2">
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <div
@@ -1127,7 +1182,7 @@ export default function Home() {
                   <div className="min-w-0">
                     <p className="font-black truncate text-sm">{voce.categoria}</p>
                     <p className="text-xs text-zinc-500 mt-0.5">
-                      {formatNumero(percentuale)}% del totale
+                      {formatPercentuale(percentuale)}% del totale
                     </p>
                   </div>
                 </div>
@@ -1286,122 +1341,6 @@ export default function Home() {
     );
   }
 
-  function GraficoLinea({
-    dati,
-  }: {
-    dati: { mese: string; entrate: number; uscite: number }[];
-  }) {
-    const massimo = Math.max(
-      1,
-      ...dati.map((voce) => Math.max(voce.entrate, voce.uscite))
-    );
-    const larghezza = 320;
-    const altezza = 160;
-    const padding = 24;
-
-    function punti(chiave: "entrate" | "uscite") {
-      return dati
-        .map((voce, index) => {
-          const x =
-            padding +
-            (index / Math.max(dati.length - 1, 1)) * (larghezza - padding * 2);
-          const y =
-            altezza -
-            padding -
-            (voce[chiave] / massimo) * (altezza - padding * 2);
-          return `${x},${y}`;
-        })
-        .join(" ");
-    }
-
-    return (
-      <div className="rounded-3xl bg-zinc-50 border border-zinc-200 p-4">
-        <div className="flex gap-4 mb-3 text-xs font-black">
-          <span className="text-emerald-600">Entrate</span>
-          <span className="text-red-600">Spese</span>
-        </div>
-
-        <svg viewBox={`0 0 ${larghezza} ${altezza}`} className="w-full h-44">
-          <polyline
-            points={punti("entrate")}
-            fill="none"
-            stroke="#dc2626"
-            strokeWidth="4"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <polyline
-            points={punti("uscite")}
-            fill="none"
-            stroke="#dc2626"
-            strokeWidth="4"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-
-          {dati.map((voce, index) => {
-            const x =
-              padding +
-              (index / Math.max(dati.length - 1, 1)) * (larghezza - padding * 2);
-            const yEntrate =
-              altezza -
-              padding -
-              (voce.entrate / massimo) * (altezza - padding * 2);
-            const yUscite =
-              altezza -
-              padding -
-              (voce.uscite / massimo) * (altezza - padding * 2);
-
-            return (
-              <g key={`punti-${voce.mese}`}>
-                <circle cx={x} cy={yEntrate} r="4" fill="#dc2626" />
-                <text
-                  x={x}
-                  y={yEntrate - 8}
-                  textAnchor="middle"
-                  fontSize="9"
-                  fontWeight="800"
-                  fill="#dc2626"
-                >
-                  {formatNumero(voce.entrate)}
-                </text>
-
-                <circle cx={x} cy={yUscite} r="4" fill="#dc2626" />
-                <text
-                  x={x}
-                  y={yUscite + 16}
-                  textAnchor="middle"
-                  fontSize="9"
-                  fontWeight="800"
-                  fill="#dc2626"
-                >
-                  {formatNumero(voce.uscite)}
-                </text>
-              </g>
-            );
-          })}
-          {dati.map((voce, index) => {
-            const x =
-              padding +
-              (index / Math.max(dati.length - 1, 1)) * (larghezza - padding * 2);
-            return (
-              <text
-                key={voce.mese}
-                x={x}
-                y={altezza - 4}
-                textAnchor="middle"
-                fontSize="10"
-                fill="#71717a"
-              >
-                {voce.mese}
-              </text>
-            );
-          })}
-        </svg>
-      </div>
-    );
-  }
-
   function CardPerformanceMensile({
     mese,
     entrate,
@@ -1425,7 +1364,7 @@ export default function Home() {
       <div className="rounded-3xl bg-zinc-50 border border-zinc-200 p-5 h-full">
         <div className="flex items-start justify-between gap-4 mb-5">
           <div>
-            <h4 className="text-3xl font-black">{mese} 2026</h4>
+            <h4 className="text-3xl font-black">{mese} {annoCorrente}</h4>
           </div>
 
           <div
@@ -1470,23 +1409,15 @@ export default function Home() {
         <div className="grid grid-cols-2 gap-3 mt-5">
           <div className="rounded-2xl bg-white border border-zinc-200 p-4">
             <p className="text-xs text-zinc-500">Saldo mese</p>
-            <p
-              className={`font-black text-lg mt-1 ${
-                saldo >= 0 ? "text-emerald-600" : "text-red-600"
-              }`}
-            >
+            <p className={`font-black text-lg mt-1 ${saldo >= 0 ? "text-emerald-600" : "text-red-600"}`}>
               {formatEuro(saldo)}
             </p>
           </div>
 
           <div className="rounded-2xl bg-white border border-zinc-200 p-4">
             <p className="text-xs text-zinc-500">Risparmio</p>
-            <p
-              className={`font-black text-lg mt-1 ${
-                capacitaRisparmio >= 0 ? "text-emerald-600" : "text-red-600"
-              }`}
-            >
-              {formatNumero(capacitaRisparmio)}%
+            <p className={`font-black text-lg mt-1 ${capacitaRisparmio >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+              {formatPercentuale(capacitaRisparmio)}%
             </p>
           </div>
         </div>
@@ -1511,13 +1442,19 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-[#f5f5f0] text-zinc-950 px-5 pt-6 pb-36 font-sans tracking-tight">
       <header className="mb-7 rounded-[2.2rem] bg-zinc-950 text-white p-6 shadow-xl shadow-zinc-300/50">
-        <p className="text-zinc-400 text-sm font-medium">Saldo attuale</p>
-        <h1 className="text-5xl font-black mt-1 tracking-tighter">
-          {formatEuro(totale)}
-        </h1>
-        <p className="text-zinc-400 text-sm mt-3">
-          Gestione personale delle spese
-        </p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-zinc-400 text-sm font-medium">Saldo attuale</p>
+            <h1 className="text-5xl font-black mt-1 tracking-tighter">
+              {formatEuro(totale)}
+            </h1>
+            <p className="text-zinc-400 text-sm mt-3">Gestione personale delle spese</p>
+          </div>
+
+          <div className="text-right text-xs font-black text-zinc-400">
+            {caricamento ? "Caricamento..." : "Online"}
+          </div>
+        </div>
 
         <div className="grid grid-cols-2 gap-2 mt-3">
           <div className="rounded-3xl bg-white/10 p-4 border border-white/10">
@@ -1554,9 +1491,7 @@ export default function Home() {
                 <p className="text-sm text-zinc-500">Anno {annoCorrente}</p>
                 <h3 className="text-2xl font-black mt-1">Recap annuale complessivo</h3>
               </div>
-              <span className="text-3xl font-black">
-                {recapAnnualeAperto ? "−" : "+"}
-              </span>
+              <span className="text-3xl font-black">{recapAnnualeAperto ? "−" : "+"}</span>
             </button>
 
             <div className="grid grid-cols-3 gap-2 mt-4">
@@ -1603,9 +1538,7 @@ export default function Home() {
                         </p>
                       </div>
 
-                      <p className="text-xs text-zinc-500 text-right">
-                        Distribuzione annuale
-                      </p>
+                      <p className="text-xs text-zinc-500 text-right">Distribuzione annuale</p>
                     </div>
 
                     <div className="grid grid-cols-[1.5fr_0.75fr_0.75fr] gap-2 px-2 text-[11px] font-black text-zinc-400 uppercase mb-2">
@@ -1637,7 +1570,7 @@ export default function Home() {
                                 <div className="min-w-0">
                                   <p className="font-black text-sm truncate">{voce.categoria}</p>
                                   <p className="text-xs text-zinc-500">
-                                    {formatNumero(percentuale)}% del totale
+                                    {formatPercentuale(percentuale)}% del totale
                                   </p>
                                 </div>
                               </div>
@@ -1698,7 +1631,7 @@ export default function Home() {
               return (
                 <div
                   key={meseKey}
-                  className={`bg-white rounded-[2rem] p-5 border border-zinc-200 shadow-sm transition-all ${aperto ? 'xl:col-span-2' : ''}`}
+                  className={`bg-white rounded-[2rem] p-5 border border-zinc-200 shadow-sm transition-all ${aperto ? "xl:col-span-2" : ""}`}
                 >
                   <button
                     onClick={() => toggleMeseRecap(meseKey)}
@@ -1714,23 +1647,15 @@ export default function Home() {
                   <div className="grid grid-cols-3 gap-2 mt-4">
                     <div className="rounded-3xl bg-zinc-50 p-3 border border-zinc-200">
                       <p className="text-xs text-zinc-500">Entrate</p>
-                      <p className="font-black text-emerald-600 mt-1">
-                        {formatEuro(entrateMese)}
-                      </p>
+                      <p className="font-black text-emerald-600 mt-1">{formatEuro(entrateMese)}</p>
                     </div>
                     <div className="rounded-3xl bg-zinc-50 p-3 border border-zinc-200">
                       <p className="text-xs text-zinc-500">Spese</p>
-                      <p className="font-black text-red-600 mt-1">
-                        {formatEuro(usciteMese)}
-                      </p>
+                      <p className="font-black text-red-600 mt-1">{formatEuro(usciteMese)}</p>
                     </div>
                     <div className="rounded-3xl bg-zinc-50 p-3 border border-zinc-200">
                       <p className="text-xs text-zinc-500">Saldo</p>
-                      <p
-                        className={`font-black mt-1 ${
-                          saldoMese >= 0 ? "text-emerald-600" : "text-red-600"
-                        }`}
-                      >
+                      <p className={`font-black mt-1 ${saldoMese >= 0 ? "text-emerald-600" : "text-red-600"}`}>
                         {formatEuro(saldoMese)}
                       </p>
                     </div>
@@ -1754,148 +1679,6 @@ export default function Home() {
                           speseCategoria={spesePerCategoriaDaMovimenti(movimentiMese)}
                         />
                       </div>
-
-                      <div>
-                        <h4 className="hidden">Scostamento per categoria</h4>
-                        <div className="hidden">
-                          {categorieBudget.map((categoria) => {
-                            const stile = categoriaStile(categoria);
-                            const speso = spesePerCategoriaDaMovimenti(movimentiMese).find(
-                              (voce) => voce.categoria === categoria
-                            )?.valore || 0;
-                            const budgetMP = budgetAnnualeCategoria(categoria) / 12;
-                            const scostamentoMP = budgetMP - speso;
-                            const budgetOP = budgetOPCategoria(categoria, index);
-                            const percentualeMP =
-                              budgetMP > 0
-                                ? Math.min((speso / budgetMP) * 100, 100)
-                                : 0;
-                            const percentualeOP =
-                              budgetOP && budgetOP > 0
-                                ? Math.min((speso / budgetOP) * 100, 100)
-                                : 0;
-
-                            function coloreBarra(percentuale: number) {
-                              if (percentuale >= 100) return "bg-red-500";
-                              if (percentuale >= 70) return "bg-yellow-500";
-                              return "bg-emerald-500";
-                            }
-
-                            return (
-                              <div
-                                key={categoria}
-                                className="rounded-[1.8rem] bg-zinc-50 border border-zinc-200 p-4"
-                              >
-                                <div className="flex items-center gap-3 mb-4">
-                                  <div
-                                    className={`w-12 h-12 rounded-2xl flex items-center justify-center border ${stile.bg} ${stile.bordo}`}
-                                  >
-                                    {stile.icona}
-                                  </div>
-
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex items-center justify-between gap-3">
-                                      <p className="font-black truncate text-sm text-base">
-                                        {categoria}
-                                      </p>
-
-                                      <p className="font-black text-red-600 shrink-0">
-                                        {formatEuro(speso)}
-                                      </p>
-                                    </div>
-
-                                    <p className="text-xs text-zinc-500 mt-1">
-                                      Spesa categoria
-                                    </p>
-                                  </div>
-                                </div>
-
-                                <div className="space-y-4">
-                                  <div>
-                                    <div className="flex items-center justify-between gap-3 mb-2">
-                                      <p className="text-xs font-black text-zinc-500">
-                                        MP26
-                                      </p>
-
-                                      <div className="text-right shrink-0">
-                                        <p
-                                          className={`text-xs font-black ${
-                                            scostamentoMP >= 0
-                                              ? "text-emerald-600"
-                                              : "text-red-600"
-                                          }`}
-                                        >
-                                          {formatEuro(speso)} / {formatEuro(budgetMP)}
-                                        </p>
-                                        <p
-                                          className={`text-[11px] font-black mt-0.5 ${
-                                            scostamentoMP >= 0
-                                              ? "text-emerald-600"
-                                              : "text-red-600"
-                                          }`}
-                                        >
-                                          {scostamentoMP >= 0 ? "Risparmiato" : "Sforato"}: {formatEuro(Math.abs(scostamentoMP))}
-                                        </p>
-                                      </div>
-                                    </div>
-
-                                    <div className="h-3 rounded-full bg-white border border-zinc-200 overflow-hidden">
-                                      <div
-                                        className={`h-full rounded-full ${coloreBarra(percentualeMP)}`}
-                                        style={{ width: `${percentualeMP}%` }}
-                                      />
-                                    </div>
-                                  </div>
-
-                                  <div>
-                                    <div className="flex items-center justify-between gap-3 mb-2">
-                                      <p className="text-xs font-black text-zinc-500">
-                                        OP
-                                      </p>
-
-                                      <div className="text-right shrink-0">
-                                        <p
-                                          className={`text-xs font-black ${
-                                            budgetOP === null
-                                              ? "text-zinc-400"
-                                              : (budgetOP || 0) - speso >= 0
-                                              ? "text-emerald-600"
-                                              : "text-red-600"
-                                          }`}
-                                        >
-                                          {budgetOP === null
-                                            ? "Da Maggio"
-                                            : `${formatEuro(speso)} / ${formatEuro(
-                                                budgetOP
-                                              )}`}
-                                        </p>
-                                        {budgetOP !== null && (
-                                          <p
-                                            className={`text-[11px] font-black mt-0.5 ${
-                                              (budgetOP || 0) - speso >= 0
-                                                ? "text-emerald-600"
-                                                : "text-red-600"
-                                            }`}
-                                          >
-                                            {(budgetOP || 0) - speso >= 0 ? "Risparmiato" : "Sforato"}: {formatEuro(Math.abs((budgetOP || 0) - speso))}
-                                          </p>
-                                        )}
-                                      </div>
-                                    </div>
-
-                                    <div className="h-3 rounded-full bg-white border border-zinc-200 overflow-hidden">
-                                      <div
-                                        className={`h-full rounded-full ${coloreBarra(percentualeOP)}`}
-                                        style={{ width: `${percentualeOP}%` }}
-                                      />
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
                     </div>
                   )}
                 </div>
@@ -1910,9 +1693,7 @@ export default function Home() {
           <div className="flex justify-between items-center mb-5 gap-3">
             <div>
               <h2 className="text-3xl font-black tracking-tight">Movimenti</h2>
-              <p className="text-zinc-500 text-sm mt-1">
-                Entrate e uscite recenti
-              </p>
+              <p className="text-zinc-500 text-sm mt-1">Entrate e uscite recenti</p>
             </div>
 
             <div className="flex gap-2 shrink-0">
@@ -1951,9 +1732,7 @@ export default function Home() {
             <div className="flex items-center justify-between gap-3 mb-3">
               <div>
                 <p className="text-sm font-black">Filtra per categoria</p>
-                <p className="text-xs text-zinc-500 mt-1">
-                  Puoi selezionare una o più categorie.
-                </p>
+                <p className="text-xs text-zinc-500 mt-1">Puoi selezionare una o più categorie.</p>
               </div>
 
               {categorieFiltroMovimenti.length > 0 && (
@@ -2007,12 +1786,7 @@ export default function Home() {
                 <div
                   key={movimento.id}
                   onTouchStart={(e) => setTouchStart(e.touches[0].clientX)}
-                  onTouchEnd={(e) =>
-                    gestisciSwipeFine(
-                      movimento.id,
-                      e.changedTouches[0].clientX
-                    )
-                  }
+                  onTouchEnd={(e) => gestisciSwipeFine(movimento.id, e.changedTouches[0].clientX)}
                   className="bg-white rounded-[1.35rem] p-4 flex justify-between gap-4 border border-zinc-200 shadow-sm active:scale-[0.98] transition"
                 >
                   <div className="min-w-0 flex gap-3">
@@ -2023,22 +1797,16 @@ export default function Home() {
                     </div>
 
                     <div className="min-w-0">
-                      <p className="font-black text-base truncate">
-                        {movimento.categoria || "ALTRO"}
-                      </p>
+                      <p className="font-black text-base truncate">{movimento.categoria || "ALTRO"}</p>
 
-                      <p className="text-sm text-zinc-500 mt-1">
-                        {movimento.data}
-                      </p>
+                      <p className="text-sm text-zinc-500 mt-1">{movimento.data}</p>
 
                       <p className="text-sm text-zinc-500 truncate">
                         {movimento.pagante || "N/D"} → {movimento.versoChi || "N/D"}
                       </p>
 
                       {movimento.nota && (
-                        <p className="text-sm text-zinc-500 mt-2 line-clamp-2">
-                          {movimento.nota}
-                        </p>
+                        <p className="text-sm text-zinc-500 mt-2 line-clamp-2">{movimento.nota}</p>
                       )}
                     </div>
                   </div>
@@ -2046,9 +1814,7 @@ export default function Home() {
                   <div className="text-right shrink-0">
                     <p
                       className={`font-black text-base ${
-                        movimento.tipo === "entrata"
-                          ? "text-emerald-600"
-                          : "text-red-600"
+                        movimento.tipo === "entrata" ? "text-emerald-600" : "text-red-600"
                       }`}
                     >
                       {movimento.tipo === "entrata" ? "+" : "-"}
@@ -2084,9 +1850,7 @@ export default function Home() {
         <section>
           <div className="mb-5">
             <h2 className="text-3xl font-black tracking-tight">Categorie</h2>
-            <p className="text-zinc-500 text-sm mt-1">
-              Somma automatica per categoria
-            </p>
+            <p className="text-zinc-500 text-sm mt-1">Somma automatica per categoria</p>
           </div>
 
           <div className="bg-zinc-950 text-white rounded-[1.6rem] p-3 border border-zinc-900 mb-4 shadow-lg shadow-zinc-300/40">
@@ -2135,9 +1899,7 @@ export default function Home() {
           <div className="grid grid-cols-2 gap-3">
             {listaCategorie.length === 0 && (
               <div className="col-span-2 bg-white rounded-[2rem] p-6 border border-zinc-200 shadow-sm">
-                <p className="text-zinc-500">
-                  Nessuna categoria trovata per questo periodo.
-                </p>
+                <p className="text-zinc-500">Nessuna categoria trovata per questo periodo.</p>
               </div>
             )}
 
@@ -2149,10 +1911,7 @@ export default function Home() {
               if (!isEntrata && categoria.uscite <= 0) return null;
 
               return (
-                <div
-                  key={categoria.nome}
-                  className="bg-white rounded-[1.35rem] p-4 border border-zinc-200 shadow-sm"
-                >
+                <div key={categoria.nome} className="bg-white rounded-[1.35rem] p-4 border border-zinc-200 shadow-sm">
                   <div className="flex gap-2 min-w-0">
                     <div
                       className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg border ${stile.bg} ${stile.bordo}`}
@@ -2175,18 +1934,10 @@ export default function Home() {
                         : "bg-red-50 border-red-100"
                     }`}
                   >
-                    <p
-                      className={`text-xs ${
-                        isEntrata ? "text-emerald-700" : "text-red-700"
-                      }`}
-                    >
+                    <p className={`text-xs ${isEntrata ? "text-emerald-700" : "text-red-700"}`}>
                       {isEntrata ? "Entrate totali" : "Spese totali"}
                     </p>
-                    <p
-                      className={`font-black mt-1 ${
-                        isEntrata ? "text-emerald-700" : "text-red-700"
-                      }`}
-                    >
+                    <p className={`font-black mt-1 ${isEntrata ? "text-emerald-700" : "text-red-700"}`}>
                       {formatEuro(valorePrincipale)}
                     </p>
                   </div>
@@ -2201,23 +1952,17 @@ export default function Home() {
         <section>
           <div className="mb-5">
             <h2 className="text-3xl font-black tracking-tight">Piani</h2>
-            <p className="text-zinc-500 text-sm mt-1">
-              Budget annuale generale e piano operativo mensile
-            </p>
+            <p className="text-zinc-500 text-sm mt-1">Budget annuale generale e piano operativo mensile</p>
           </div>
 
           <div className="bg-zinc-950 text-white rounded-[2rem] p-5 border border-zinc-900 shadow-xl shadow-zinc-300/50 mb-5">
             <p className="text-zinc-400 text-sm">MP26 · Piano annuale</p>
-            <p className="text-3xl font-black mt-2">
-              {formatEuro(budgetAnnualeTotale)}
-            </p>
+            <p className="text-3xl font-black mt-2">{formatEuro(budgetAnnualeTotale)}</p>
 
             <div className="grid grid-cols-2 gap-2 mt-3">
               <div className="rounded-3xl bg-white/10 p-4 border border-white/10">
                 <p className="text-xs text-zinc-400">Speso anno</p>
-                <p className="font-black text-red-300 mt-1">
-                  {formatEuro(spesaAnnualeTotale)}
-                </p>
+                <p className="font-black text-red-300 mt-1">{formatEuro(spesaAnnualeTotale)}</p>
               </div>
 
               <div className="rounded-3xl bg-white/10 p-4 border border-white/10">
@@ -2242,13 +1987,9 @@ export default function Home() {
             >
               <div>
                 <h3 className="text-xl font-black mb-1">Budget annuale</h3>
-                <p className="text-sm text-zinc-500">
-                  Apri la tendina per inserire, modificare o azzerare i valori.
-                </p>
+                <p className="text-sm text-zinc-500">Apri la tendina per inserire, modificare o azzerare i valori.</p>
               </div>
-              <span className="text-2xl font-black">
-                {pianoAnnualeAperto ? "−" : "+"}
-              </span>
+              <span className="text-2xl font-black">{pianoAnnualeAperto ? "−" : "+"}</span>
             </button>
 
             {pianoAnnualeAperto && (
@@ -2258,33 +1999,19 @@ export default function Home() {
                   const budget = budgetAnnualeCategoria(categoria);
                   const speso = spesaAnnualeCategoria(categoria);
                   const residuo = budget - speso;
-                  const percentuale =
-                    budget > 0 ? Math.min((speso / budget) * 100, 100) : 0;
+                  const percentuale = budget > 0 ? Math.min((speso / budget) * 100, 100) : 0;
 
                   return (
-                    <div
-                      key={categoria}
-                      className="rounded-3xl bg-zinc-50 border border-zinc-200 p-3"
-                    >
+                    <div key={categoria} className="rounded-3xl bg-zinc-50 border border-zinc-200 p-3">
                       <div className="flex items-center gap-2 mb-3">
-                        <div
-                          className={`w-10 h-10 rounded-xl flex items-center justify-center border ${stile.bg} ${stile.bordo}`}
-                        >
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center border ${stile.bg} ${stile.bordo}`}>
                           {stile.icona}
                         </div>
                         <div className="min-w-0">
                           <p className="font-black text-sm truncate">{categoria}</p>
-                          <p className="text-xs text-zinc-500">
-                            Previsto: {formatEuro(budget)}
-                          </p>
-                          <p className="text-xs text-zinc-500">
-                            Speso: {formatEuro(speso)}
-                          </p>
-                          <p
-                            className={`text-xs font-black mt-1 ${
-                              residuo >= 0 ? "text-emerald-600" : "text-red-600"
-                            }`}
-                          >
+                          <p className="text-xs text-zinc-500">Previsto: {formatEuro(budget)}</p>
+                          <p className="text-xs text-zinc-500">Speso: {formatEuro(speso)}</p>
+                          <p className={`text-xs font-black mt-1 ${residuo >= 0 ? "text-emerald-600" : "text-red-600"}`}>
                             Residuo: {formatEuro(residuo)}
                           </p>
                         </div>
@@ -2293,6 +2020,7 @@ export default function Home() {
                       <input
                         type="text"
                         inputMode="decimal"
+                        pattern="[0-9]*[,.]?[0-9]*"
                         value={valoreDraftAnnuale(categoria)}
                         onChange={(e) =>
                           setBudgetAnnualeDraft((correnti) => ({
@@ -2311,31 +2039,19 @@ export default function Home() {
                       />
 
                       <div className="grid grid-cols-3 gap-2 mt-2">
-                        <button
-                          onClick={() => confermaBudgetAnnuale(categoria)}
-                          className="rounded-2xl bg-zinc-950 text-white py-2 text-xs font-black"
-                        >
+                        <button onClick={() => confermaBudgetAnnuale(categoria)} className="rounded-2xl bg-zinc-950 text-white py-2 text-xs font-black">
                           Conferma
                         </button>
-                        <button
-                          onClick={() => modificaBudgetAnnuale(categoria)}
-                          className="rounded-2xl bg-white border border-zinc-200 py-2 text-xs font-black text-zinc-600"
-                        >
+                        <button onClick={() => modificaBudgetAnnuale(categoria)} className="rounded-2xl bg-white border border-zinc-200 py-2 text-xs font-black text-zinc-600">
                           Modifica
                         </button>
-                        <button
-                          onClick={() => azzeraBudgetAnnuale(categoria)}
-                          className="rounded-2xl bg-red-50 border border-red-100 py-2 text-xs font-black text-red-600"
-                        >
+                        <button onClick={() => azzeraBudgetAnnuale(categoria)} className="rounded-2xl bg-red-50 border border-red-100 py-2 text-xs font-black text-red-600">
                           Azzera
                         </button>
                       </div>
 
                       <div className="h-2 bg-zinc-200 rounded-full overflow-hidden mt-3">
-                        <div
-                          className="h-full bg-zinc-950 rounded-full"
-                          style={{ width: `${percentuale}%` }}
-                        />
+                        <div className="h-full bg-zinc-950 rounded-full" style={{ width: `${percentuale}%` }} />
                       </div>
                     </div>
                   );
@@ -2348,9 +2064,7 @@ export default function Home() {
             <div className="flex justify-between items-start gap-4 mb-4">
               <div>
                 <p className="text-zinc-400 text-sm">OP · Piano operativo mensile</p>
-                <p className="text-3xl font-black mt-2">
-                  {formatEuro(budgetMensileTotale)}
-                </p>
+                <p className="text-3xl font-black mt-2">{formatEuro(budgetMensileTotale)}</p>
               </div>
 
               <input
@@ -2364,9 +2078,7 @@ export default function Home() {
             <div className="grid grid-cols-2 gap-2 mt-3">
               <div className="rounded-3xl bg-white/10 p-4 border border-white/10">
                 <p className="text-xs text-zinc-400">Speso mese</p>
-                <p className="font-black text-red-300 mt-1">
-                  {formatEuro(spesaMensileTotale)}
-                </p>
+                <p className="font-black text-red-300 mt-1">{formatEuro(spesaMensileTotale)}</p>
               </div>
 
               <div className="rounded-3xl bg-white/10 p-4 border border-white/10">
@@ -2391,13 +2103,9 @@ export default function Home() {
             >
               <div>
                 <h3 className="text-xl font-black mb-1">Budget operativo mese</h3>
-                <p className="text-sm text-zinc-500">
-                  Apri la tendina per gestire i valori del mese selezionato.
-                </p>
+                <p className="text-sm text-zinc-500">Apri la tendina per gestire i valori del mese selezionato.</p>
               </div>
-              <span className="text-2xl font-black">
-                {pianoMensileAperto ? "−" : "+"}
-              </span>
+              <span className="text-2xl font-black">{pianoMensileAperto ? "−" : "+"}</span>
             </button>
 
             {pianoMensileAperto && (
@@ -2407,33 +2115,19 @@ export default function Home() {
                   const budget = budgetMensileCategoria(categoria);
                   const speso = spesaMensileCategoria(categoria);
                   const residuo = budget - speso;
-                  const percentuale =
-                    budget > 0 ? Math.min((speso / budget) * 100, 100) : 0;
+                  const percentuale = budget > 0 ? Math.min((speso / budget) * 100, 100) : 0;
 
                   return (
-                    <div
-                      key={categoria}
-                      className="rounded-3xl bg-zinc-50 border border-zinc-200 p-3"
-                    >
+                    <div key={categoria} className="rounded-3xl bg-zinc-50 border border-zinc-200 p-3">
                       <div className="flex items-center gap-2 mb-3">
-                        <div
-                          className={`w-10 h-10 rounded-xl flex items-center justify-center border ${stile.bg} ${stile.bordo}`}
-                        >
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center border ${stile.bg} ${stile.bordo}`}>
                           {stile.icona}
                         </div>
                         <div className="min-w-0">
                           <p className="font-black text-sm truncate">{categoria}</p>
-                          <p className="text-xs text-zinc-500">
-                            Previsto: {formatEuro(budget)}
-                          </p>
-                          <p className="text-xs text-zinc-500">
-                            Speso: {formatEuro(speso)}
-                          </p>
-                          <p
-                            className={`text-xs font-black mt-1 ${
-                              residuo >= 0 ? "text-emerald-600" : "text-red-600"
-                            }`}
-                          >
+                          <p className="text-xs text-zinc-500">Previsto: {formatEuro(budget)}</p>
+                          <p className="text-xs text-zinc-500">Speso: {formatEuro(speso)}</p>
+                          <p className={`text-xs font-black mt-1 ${residuo >= 0 ? "text-emerald-600" : "text-red-600"}`}>
                             Residuo: {formatEuro(residuo)}
                           </p>
                         </div>
@@ -2442,6 +2136,7 @@ export default function Home() {
                       <input
                         type="text"
                         inputMode="decimal"
+                        pattern="[0-9]*[,.]?[0-9]*"
                         value={valoreDraftMensile(categoria)}
                         onChange={(e) =>
                           setBudgetMensileDraft((correnti) => ({
@@ -2460,31 +2155,19 @@ export default function Home() {
                       />
 
                       <div className="grid grid-cols-3 gap-2 mt-2">
-                        <button
-                          onClick={() => confermaBudgetMensile(categoria)}
-                          className="rounded-2xl bg-zinc-950 text-white py-2 text-xs font-black"
-                        >
+                        <button onClick={() => confermaBudgetMensile(categoria)} className="rounded-2xl bg-zinc-950 text-white py-2 text-xs font-black">
                           Conferma
                         </button>
-                        <button
-                          onClick={() => modificaBudgetMensile(categoria)}
-                          className="rounded-2xl bg-white border border-zinc-200 py-2 text-xs font-black text-zinc-600"
-                        >
+                        <button onClick={() => modificaBudgetMensile(categoria)} className="rounded-2xl bg-white border border-zinc-200 py-2 text-xs font-black text-zinc-600">
                           Modifica
                         </button>
-                        <button
-                          onClick={() => azzeraBudgetMensile(categoria)}
-                          className="rounded-2xl bg-red-50 border border-red-100 py-2 text-xs font-black text-red-600"
-                        >
+                        <button onClick={() => azzeraBudgetMensile(categoria)} className="rounded-2xl bg-red-50 border border-red-100 py-2 text-xs font-black text-red-600">
                           Azzera
                         </button>
                       </div>
 
                       <div className="h-2 bg-zinc-200 rounded-full overflow-hidden mt-3">
-                        <div
-                          className="h-full bg-zinc-950 rounded-full"
-                          style={{ width: `${percentuale}%` }}
-                        />
+                        <div className="h-full bg-zinc-950 rounded-full" style={{ width: `${percentuale}%` }} />
                       </div>
                     </div>
                   );
@@ -2504,21 +2187,14 @@ export default function Home() {
                   {movimentoInModifica ? "Modifica movimento" : "Nuovo movimento"}
                 </h2>
                 <p className="text-sm text-zinc-500">
-                  {movimentoInModifica
-                    ? "Aggiorna i parametri del movimento"
-                    : "Inserisci i dettagli"}
+                  {movimentoInModifica ? "Aggiorna i parametri del movimento" : "Inserisci i dettagli"}
                 </p>
               </div>
 
-              <button
-                onClick={annullaInserimento}
-                className="w-10 h-10 rounded-full bg-zinc-950 text-white"
-              >
+              <button onClick={annullaInserimento} className="w-10 h-10 rounded-full bg-zinc-950 text-white">
                 ×
               </button>
             </div>
-
-            
 
             <div className="space-y-1.5">
               <select
@@ -2546,50 +2222,31 @@ export default function Home() {
                 className="w-full p-4 rounded-2xl bg-white border border-zinc-200 outline-none"
                 placeholder="Chi ha pagato"
                 value={nuovoMovimento.pagante}
-                onChange={(e) =>
-                  setNuovoMovimento({
-                    ...nuovoMovimento,
-                    pagante: e.target.value,
-                  })
-                }
+                onChange={(e) => setNuovoMovimento({ ...nuovoMovimento, pagante: e.target.value })}
               />
 
               <input
                 className="w-full p-4 rounded-2xl bg-white border border-zinc-200 outline-none"
                 type="date"
                 value={nuovoMovimento.data}
-                onChange={(e) =>
-                  setNuovoMovimento({
-                    ...nuovoMovimento,
-                    data: e.target.value,
-                  })
-                }
+                onChange={(e) => setNuovoMovimento({ ...nuovoMovimento, data: e.target.value })}
               />
 
               <input
                 className="w-full p-4 rounded-2xl bg-white border border-zinc-200 outline-none"
                 placeholder="Verso chi"
                 value={nuovoMovimento.versoChi}
-                onChange={(e) =>
-                  setNuovoMovimento({
-                    ...nuovoMovimento,
-                    versoChi: e.target.value,
-                  })
-                }
+                onChange={(e) => setNuovoMovimento({ ...nuovoMovimento, versoChi: e.target.value })}
               />
 
               <input
                 className="w-full p-4 rounded-2xl bg-white border border-zinc-200 outline-none text-xl font-black"
                 type="text"
                 inputMode="decimal"
+                pattern="[0-9]*[,.]?[0-9]*"
                 placeholder="Importo"
                 value={nuovoMovimento.importo}
-                onChange={(e) =>
-                  setNuovoMovimento({
-                    ...nuovoMovimento,
-                    importo: e.target.value,
-                  })
-                }
+                onChange={(e) => setNuovoMovimento({ ...nuovoMovimento, importo: e.target.value })}
                 onBlur={(e) =>
                   setNuovoMovimento({
                     ...nuovoMovimento,
@@ -2602,19 +2259,19 @@ export default function Home() {
                 className="w-full p-4 rounded-2xl bg-white border border-zinc-200 outline-none min-h-24"
                 placeholder="Nota"
                 value={nuovoMovimento.nota}
-                onChange={(e) =>
-                  setNuovoMovimento({
-                    ...nuovoMovimento,
-                    nota: e.target.value,
-                  })
-                }
+                onChange={(e) => setNuovoMovimento({ ...nuovoMovimento, nota: e.target.value })}
               />
 
               <button
                 onClick={salvaMovimento}
-                className="w-full p-4 rounded-2xl bg-zinc-950 text-white font-black text-lg"
+                disabled={salvataggio}
+                className="w-full p-4 rounded-2xl bg-zinc-950 text-white font-black text-lg disabled:opacity-50"
               >
-                {movimentoInModifica ? "Salva modifiche" : "Salva movimento"}
+                {salvataggio
+                  ? "Salvataggio..."
+                  : movimentoInModifica
+                  ? "Salva modifiche"
+                  : "Salva movimento"}
               </button>
 
               <button
