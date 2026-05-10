@@ -193,6 +193,20 @@ function normalizzaImporto(importo: string) {
     return Number(valore.replace(",", "."));
   }
 
+  if (haPunto) {
+    const parti = valore.split(".");
+
+    const sembraMigliaia =
+      parti.length > 1 &&
+      parti.slice(1).every((parte) => parte.length === 3);
+
+    if (sembraMigliaia) {
+      return Number(valore.replaceAll(".", ""));
+    }
+
+    return Number(valore);
+  }
+
   return Number(valore);
 }
 
@@ -315,6 +329,7 @@ export default function Home() {
   const [touchStart, setTouchStart] = useState<number | null>(null);
   const [caricamento, setCaricamento] = useState(true);
   const [salvataggio, setSalvataggio] = useState(false);
+  const [pianiCaricati, setPianiCaricati] = useState(false);
   const [nuovoMovimento, setNuovoMovimento] = useState<NuovoMovimento>(nuovoMovimentoVuoto());
 
   useEffect(() => {
@@ -352,21 +367,67 @@ export default function Home() {
     caricaMovimenti();
   }, []);
 
-  useEffect(() => {
-    const pianoAnnualeSalvato = localStorage.getItem("pianoAnnuale");
-    const pianiMensiliSalvati = localStorage.getItem("pianiMensili");
+ useEffect(() => {
+  async function caricaPiani() {
+    const { data, error } = await supabase
+      .from("app_state")
+      .select("*")
+      .in("key", ["pianoAnnuale", "pianiMensili"]);
 
-    if (pianoAnnualeSalvato) setPianoAnnuale(JSON.parse(pianoAnnualeSalvato));
-    if (pianiMensiliSalvati) setPianiMensili(JSON.parse(pianiMensiliSalvati));
-  }, []);
+    if (error) {
+      console.error("Errore caricamento piani:", error);
+      setPianiCaricati(true);
+      return;
+    }
 
-  useEffect(() => {
-    localStorage.setItem("pianoAnnuale", JSON.stringify(pianoAnnuale));
-  }, [pianoAnnuale]);
+    const pianoAnnualeOnline = data?.find((item) => item.key === "pianoAnnuale");
+    const pianiMensiliOnline = data?.find((item) => item.key === "pianiMensili");
 
-  useEffect(() => {
-    localStorage.setItem("pianiMensili", JSON.stringify(pianiMensili));
-  }, [pianiMensili]);
+    if (pianoAnnualeOnline?.value) {
+      setPianoAnnuale(pianoAnnualeOnline.value as PianoAnnualeVoce[]);
+    }
+
+    if (pianiMensiliOnline?.value) {
+      setPianiMensili(pianiMensiliOnline.value as PianoMensile[]);
+    }
+
+    setPianiCaricati(true);
+  }
+
+  caricaPiani();
+}, []);
+
+useEffect(() => {
+  if (!pianiCaricati) return;
+
+  async function salvaPianoAnnuale() {
+    const { error } = await supabase.from("app_state").upsert({
+      key: "pianoAnnuale",
+      value: pianoAnnuale,
+      updated_at: new Date().toISOString(),
+    });
+
+    if (error) console.error("Errore salvataggio piano annuale:", error);
+  }
+
+  salvaPianoAnnuale();
+}, [pianoAnnuale, pianiCaricati]);
+
+useEffect(() => {
+  if (!pianiCaricati) return;
+
+  async function salvaPianiMensili() {
+    const { error } = await supabase.from("app_state").upsert({
+      key: "pianiMensili",
+      value: pianiMensili,
+      updated_at: new Date().toISOString(),
+    });
+
+    if (error) console.error("Errore salvataggio piani mensili:", error);
+  }
+
+  salvaPianiMensili();
+}, [pianiMensili, pianiCaricati]);
 
   const totale = useMemo(
     () =>
@@ -1604,7 +1665,7 @@ export default function Home() {
                                   : "bg-red-50 text-red-700"
                               }`}
                             >
-                              MP {deltaMP >= 0 ? "+" : "-"}
+                              {deltaMP >= 0 ? "+" : "-"}
                               {formatEuro(Math.abs(deltaMP))}
                             </p>
                           </div>
