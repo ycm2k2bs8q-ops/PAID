@@ -175,15 +175,22 @@ function normalizzaImporto(importo: string) {
 
   if (!valore) return NaN;
 
-  const ultimaVirgola = valore.lastIndexOf(",");
-  const ultimoPunto = valore.lastIndexOf(".");
+  const haVirgola = valore.includes(",");
+  const haPunto = valore.includes(".");
 
-  if (ultimaVirgola > ultimoPunto) {
-    return Number(valore.replaceAll(".", "").replace(",", "."));
+  if (haVirgola && haPunto) {
+    const ultimaVirgola = valore.lastIndexOf(",");
+    const ultimoPunto = valore.lastIndexOf(".");
+
+    if (ultimaVirgola > ultimoPunto) {
+      return Number(valore.replaceAll(".", "").replace(",", "."));
+    }
+
+    return Number(valore.replaceAll(",", ""));
   }
 
-  if (ultimoPunto > ultimaVirgola) {
-    return Number(valore.replaceAll(",", ""));
+  if (haVirgola) {
+    return Number(valore.replace(",", "."));
   }
 
   return Number(valore);
