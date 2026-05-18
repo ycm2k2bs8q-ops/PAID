@@ -2374,6 +2374,7 @@ useEffect(() => {
           </button>
         ))}
       </nav>
-    </main>
-  );
+     </div>
+  </main>
+);
 }
