@@ -1317,7 +1317,7 @@ useEffect(() => {
         <p className="text-sm text-zinc-500">Distribuzione spese mese</p>
 
         <div className="relative mt-4">
-          <svg width="340" height="340" viewBox="0 0 340 340">
+          <svg className="w-full max-w-[340px] h-auto" viewBox="0 0 340 340">
             {fette.map((fetta, index) => (
               <g key={index}>
                 <path d={fetta.path} fill={fetta.color} />
@@ -1508,12 +1508,13 @@ useEffect(() => {
   }
 
   return (
-    <main className="min-h-screen bg-[#f5f5f0] text-zinc-950 px-5 pt-6 pb-36 font-sans tracking-tight">
+  <main className="min-h-screen bg-[#f5f5f0] text-zinc-950 px-4 sm:px-5 pt-6 pb-36 font-sans tracking-tight">
+    <div className="mx-auto w-full max-w-6xl">
       <header className="mb-7 rounded-[2.2rem] bg-zinc-950 text-white p-6 shadow-xl shadow-zinc-300/50">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-zinc-400 text-sm font-medium">Saldo attuale</p>
-            <h1 className="text-5xl font-black mt-1 tracking-tighter">
+            <h1 className="text-4xl sm:text-5xl font-black mt-1 tracking-tighter break-words">
               {formatEuro(totale)}
             </h1>
             <p className="text-zinc-400 text-sm mt-3">Gestione personale delle spese</p>
