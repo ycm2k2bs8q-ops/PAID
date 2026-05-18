@@ -1509,7 +1509,7 @@ useEffect(() => {
 
   return (
   <main className="min-h-screen bg-[#f5f5f0] text-zinc-950 px-4 sm:px-5 pt-6 pb-36 font-sans tracking-tight">
-    <div className="mx-auto w-full max-w-6xl">
+    <div className="mx-auto w-full max-w-[1800px]">
       <header className="mb-7 rounded-[2.2rem] bg-zinc-950 text-white p-6 shadow-xl shadow-zinc-300/50">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -1597,7 +1597,7 @@ useEffect(() => {
 
             {recapAnnualeAperto && (
               <div className="mt-5 space-y-4">
-                <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_1fr] gap-4 items-start">
+                <div className="grid grid-cols-1 2xl:grid-cols-[0.8fr_1.6fr] gap-4 items-start">
                   <div className="rounded-[2rem] bg-zinc-50 border border-zinc-200 p-4 h-fit">
                     <div className="flex items-end justify-between gap-4 mb-4">
                       <div>
